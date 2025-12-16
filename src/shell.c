@@ -11,25 +11,20 @@ int main() {
     char *args[MAX_ARGS];
 
     while (1) {
-        // Prompt
         printf("myshell> ");
         fflush(stdout);
 
-        // Read input
         if (fgets(line, MAX_LINE, stdin) == NULL) {
             printf("\n");
             break;
         }
 
-        // Remove newline
         line[strcspn(line, "\n")] = '\0';
 
-        // Exit command
         if (strcmp(line, "exit") == 0) {
             break;
         }
 
-        // Tokenize
         int argc = 0;
         char *token = strtok(line, " ");
 
@@ -37,15 +32,19 @@ int main() {
             args[argc++] = token;
             token = strtok(NULL, " ");
         }
-
         args[argc] = NULL;
 
-        // Ignore empty input
         if (args[0] == NULL) {
             continue;
         }
 
-        // Fork
+        // 🔹 Detect background execution
+        int background = 0;
+        if (argc > 0 && strcmp(args[argc - 1], "&") == 0) {
+            background = 1;
+            args[argc - 1] = NULL; // remove "&"
+        }
+
         pid_t pid = fork();
 
         if (pid < 0) {
@@ -54,13 +53,15 @@ int main() {
         }
 
         if (pid == 0) {
-            // Child
             execvp(args[0], args);
             perror("exec failed");
             return 1;
         } else {
-            // Parent
-            wait(NULL);
+            if (!background) {
+                wait(NULL);
+            } else {
+                printf("[background pid %d]\n", pid);
+            }
         }
     }
 
