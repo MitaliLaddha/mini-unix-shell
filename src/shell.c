@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #define MAX_LINE 1024
 #define MAX_ARGS 64
@@ -9,21 +11,25 @@ int main() {
     char *args[MAX_ARGS];
 
     while (1) {
+        // Prompt
         printf("myshell> ");
         fflush(stdout);
 
+        // Read input
         if (fgets(line, MAX_LINE, stdin) == NULL) {
             printf("\n");
             break;
         }
 
+        // Remove newline
         line[strcspn(line, "\n")] = '\0';
 
+        // Exit command
         if (strcmp(line, "exit") == 0) {
             break;
         }
 
-        // Tokenize input
+        // Tokenize
         int argc = 0;
         char *token = strtok(line, " ");
 
@@ -32,11 +38,29 @@ int main() {
             token = strtok(NULL, " ");
         }
 
-        args[argc] = NULL;  // VERY IMPORTANT
+        args[argc] = NULL;
 
-        // Debug: print tokens
-        for (int i = 0; args[i] != NULL; i++) {
-            printf("arg[%d] = %s\n", i, args[i]);
+        // Ignore empty input
+        if (args[0] == NULL) {
+            continue;
+        }
+
+        // Fork
+        pid_t pid = fork();
+
+        if (pid < 0) {
+            perror("fork failed");
+            continue;
+        }
+
+        if (pid == 0) {
+            // Child
+            execvp(args[0], args);
+            perror("exec failed");
+            return 1;
+        } else {
+            // Parent
+            wait(NULL);
         }
     }
 
