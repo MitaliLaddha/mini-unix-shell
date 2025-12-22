@@ -3,49 +3,41 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #define MAX_LINE 1024
 #define MAX_ARGS 64
 
-// Reap background children to avoid zombies
 void handle_sigchld(int sig) {
     while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
-// Ignore Ctrl+C in the shell itself
 void handle_sigint(int sig) {
-    // Do nothing
+    // Ignore Ctrl+C in shell
 }
 
 int main() {
     char line[MAX_LINE];
     char *args[MAX_ARGS];
 
-    // Register signal handlers
     signal(SIGCHLD, handle_sigchld);
     signal(SIGINT, handle_sigint);
 
     while (1) {
-        // Prompt
         printf("myshell> ");
         fflush(stdout);
 
-        // Read input
         if (fgets(line, MAX_LINE, stdin) == NULL) {
-            // Ctrl+D (EOF)
             printf("\n");
             break;
         }
 
-        // Remove trailing newline
         line[strcspn(line, "\n")] = '\0';
 
-        // Exit command
         if (strcmp(line, "exit") == 0) {
             break;
         }
 
-        // Tokenize input
         int argc = 0;
         char *token = strtok(line, " ");
 
@@ -55,16 +47,34 @@ int main() {
         }
         args[argc] = NULL;
 
-        // Ignore empty input
         if (args[0] == NULL) {
             continue;
         }
 
-        // Check for background execution
+        // Background execution
         int background = 0;
         if (argc > 0 && strcmp(args[argc - 1], "&") == 0) {
             background = 1;
-            args[argc - 1] = NULL; // remove &
+            args[argc - 1] = NULL;
+            argc--;
+        }
+
+        // Redirection variables
+        char *input_file = NULL;
+        char *output_file = NULL;
+
+        // Scan args for < or >
+        for (int i = 0; i < argc; i++) {
+            if (strcmp(args[i], "<") == 0) {
+                input_file = args[i + 1];
+                args[i] = NULL;
+                break;
+            }
+            if (strcmp(args[i], ">") == 0) {
+                output_file = args[i + 1];
+                args[i] = NULL;
+                break;
+            }
         }
 
         pid_t pid = fork();
@@ -75,14 +85,37 @@ int main() {
         }
 
         if (pid == 0) {
-            // Child: restore default Ctrl+C behavior
+            // Child: restore default Ctrl+C
             signal(SIGINT, SIG_DFL);
+
+            // Input redirection
+            if (input_file) {
+                int fd = open(input_file, O_RDONLY);
+                if (fd < 0) {
+                    perror("open input failed");
+                    return 1;
+                }
+                dup2(fd, STDIN_FILENO);
+                close(fd);
+            }
+
+            // Output redirection
+            if (output_file) {
+                int fd = open(output_file,
+                              O_WRONLY | O_CREAT | O_TRUNC,
+                              0644);
+                if (fd < 0) {
+                    perror("open output failed");
+                    return 1;
+                }
+                dup2(fd, STDOUT_FILENO);
+                close(fd);
+            }
 
             execvp(args[0], args);
             perror("exec failed");
             return 1;
         } else {
-            // Parent
             if (!background) {
                 wait(NULL);
             } else {
