@@ -2,13 +2,20 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 #define MAX_LINE 1024
 #define MAX_ARGS 64
 
+void handle_sigchld(int sig) {
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
 int main() {
     char line[MAX_LINE];
     char *args[MAX_ARGS];
+
+    signal(SIGCHLD, handle_sigchld);
 
     while (1) {
         printf("myshell> ");
@@ -38,11 +45,10 @@ int main() {
             continue;
         }
 
-        // 🔹 Detect background execution
         int background = 0;
         if (argc > 0 && strcmp(args[argc - 1], "&") == 0) {
             background = 1;
-            args[argc - 1] = NULL; // remove "&"
+            args[argc - 1] = NULL;
         }
 
         pid_t pid = fork();
