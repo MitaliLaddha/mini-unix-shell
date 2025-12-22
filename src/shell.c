@@ -7,6 +7,7 @@
 
 #define MAX_LINE 1024
 #define MAX_ARGS 64
+#define MAX_CMDS 16
 
 void handle_sigchld(int sig) {
     while (waitpid(-1, NULL, WNOHANG) > 0);
@@ -16,9 +17,18 @@ void handle_sigint(int sig) {
     // Ignore Ctrl+C in shell
 }
 
+void parse_args(char *cmd, char **args) {
+    int i = 0;
+    char *token = strtok(cmd, " ");
+    while (token != NULL && i < MAX_ARGS - 1) {
+        args[i++] = token;
+        token = strtok(NULL, " ");
+    }
+    args[i] = NULL;
+}
+
 int main() {
     char line[MAX_LINE];
-    char *args[MAX_ARGS];
 
     signal(SIGCHLD, handle_sigchld);
     signal(SIGINT, handle_sigint);
@@ -38,89 +48,66 @@ int main() {
             break;
         }
 
-        int argc = 0;
-        char *token = strtok(line, " ");
+        // Split by pipes
+        char *cmds[MAX_CMDS];
+        int num_cmds = 0;
 
-        while (token != NULL && argc < MAX_ARGS - 1) {
-            args[argc++] = token;
-            token = strtok(NULL, " ");
-        }
-        args[argc] = NULL;
-
-        if (args[0] == NULL) {
-            continue;
+        char *cmd = strtok(line, "|");
+        while (cmd != NULL && num_cmds < MAX_CMDS) {
+            cmds[num_cmds++] = cmd;
+            cmd = strtok(NULL, "|");
         }
 
-        // Background execution
-        int background = 0;
-        if (argc > 0 && strcmp(args[argc - 1], "&") == 0) {
-            background = 1;
-            args[argc - 1] = NULL;
-            argc--;
-        }
+        int prev_fd = -1;  // read end of previous pipe
 
-        // Redirection variables
-        char *input_file = NULL;
-        char *output_file = NULL;
+        for (int i = 0; i < num_cmds; i++) {
+            int pipefd[2];
 
-        // Scan args for < or >
-        for (int i = 0; i < argc; i++) {
-            if (strcmp(args[i], "<") == 0) {
-                input_file = args[i + 1];
-                args[i] = NULL;
-                break;
+            if (i < num_cmds - 1) {
+                pipe(pipefd);
             }
-            if (strcmp(args[i], ">") == 0) {
-                output_file = args[i + 1];
-                args[i] = NULL;
-                break;
-            }
-        }
 
-        pid_t pid = fork();
+            pid_t pid = fork();
 
-        if (pid < 0) {
-            perror("fork failed");
-            continue;
-        }
+            if (pid == 0) {
+                // Child
+                signal(SIGINT, SIG_DFL);
 
-        if (pid == 0) {
-            // Child: restore default Ctrl+C
-            signal(SIGINT, SIG_DFL);
-
-            // Input redirection
-            if (input_file) {
-                int fd = open(input_file, O_RDONLY);
-                if (fd < 0) {
-                    perror("open input failed");
-                    return 1;
+                // Read from previous pipe
+                if (prev_fd != -1) {
+                    dup2(prev_fd, STDIN_FILENO);
+                    close(prev_fd);
                 }
-                dup2(fd, STDIN_FILENO);
-                close(fd);
-            }
 
-            // Output redirection
-            if (output_file) {
-                int fd = open(output_file,
-                              O_WRONLY | O_CREAT | O_TRUNC,
-                              0644);
-                if (fd < 0) {
-                    perror("open output failed");
-                    return 1;
+                // Write to next pipe
+                if (i < num_cmds - 1) {
+                    close(pipefd[0]);
+                    dup2(pipefd[1], STDOUT_FILENO);
+                    close(pipefd[1]);
                 }
-                dup2(fd, STDOUT_FILENO);
-                close(fd);
+
+                char *args[MAX_ARGS];
+                parse_args(cmds[i], args);
+
+                execvp(args[0], args);
+                perror("exec failed");
+                return 1;
             }
 
-            execvp(args[0], args);
-            perror("exec failed");
-            return 1;
-        } else {
-            if (!background) {
-                wait(NULL);
-            } else {
-                printf("[background pid %d]\n", pid);
+            // Parent
+            if (prev_fd != -1) {
+                close(prev_fd);
             }
+
+            if (i < num_cmds - 1) {
+                close(pipefd[1]);
+                prev_fd = pipefd[0];
+            }
+        }
+
+        // Wait for all children
+        for (int i = 0; i < num_cmds; i++) {
+            wait(NULL);
         }
     }
 
