@@ -11,27 +11,47 @@
 #define MAX_ARGS 64
 #define MAX_CMDS 16
 #define MAX_JOBS 64
+#define HISTORY_SIZE 100
 
 pid_t stopped_pid = -1;
 
-/* reap background children */
+/* ---------- history ---------- */
+
+char history[HISTORY_SIZE][MAX_LINE];
+int history_count = 0;
+
+void add_history(char *cmd) {
+    if (strlen(cmd) == 0) return;
+
+    strcpy(history[history_count % HISTORY_SIZE], cmd);
+    history_count++;
+}
+
+void show_history(int index, char *buffer) {
+    if (index < 0 || index >= history_count) return;
+
+    strcpy(buffer, history[index % HISTORY_SIZE]);
+    printf("\33[2K\rmyshell> %s", buffer);
+    fflush(stdout);
+}
+
+/* ---------- signals ---------- */
+
 void handle_sigchld(int sig) {
     while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
-/* ignore ctrl+c in shell */
 void handle_sigint(int sig) {
 }
 
-/* ignore ctrl+z in shell */
 void handle_sigtstp(int sig) {
 }
 
-/* split command into argv */
+/* ---------- parsing ---------- */
+
 void parse_args(char *cmd, char **args) {
 
     int i = 0;
-
     char *token = strtok(cmd, " \t");
 
     while (token != NULL && i < MAX_ARGS - 1) {
@@ -41,6 +61,8 @@ void parse_args(char *cmd, char **args) {
 
     args[i] = NULL;
 }
+
+/* ---------- job control ---------- */
 
 typedef struct {
     int id;
@@ -54,8 +76,7 @@ int job_count = 0;
 
 void add_job(pid_t pid, char *cmd, int stopped) {
 
-    if (job_count >= MAX_JOBS)
-        return;
+    if (job_count >= MAX_JOBS) return;
 
     jobs[job_count].id = job_count + 1;
     jobs[job_count].pid = pid;
@@ -98,11 +119,32 @@ void resume_background() {
     }
 }
 
+/* ---------- terminal raw mode ---------- */
+
+void enable_raw_mode(struct termios *orig) {
+
+    struct termios raw;
+
+    tcgetattr(STDIN_FILENO, orig);
+    raw = *orig;
+
+    raw.c_lflag &= ~(ICANON | ECHO);
+
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+
+void disable_raw_mode(struct termios *orig) {
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, orig);
+}
+
+/* ---------- main ---------- */
+
 int main() {
 
     char line[MAX_LINE];
 
-    /* shell job-control setup */
+    struct termios orig_termios;
+
     pid_t shell_pgid = getpid();
     setpgid(shell_pgid, shell_pgid);
     tcsetpgrp(STDIN_FILENO, shell_pgid);
@@ -119,28 +161,89 @@ int main() {
         printf("myshell> ");
         fflush(stdout);
 
-        if (fgets(line, MAX_LINE, stdin) == NULL) {
-            printf("\n");
-            break;
+        enable_raw_mode(&orig_termios);
+
+        int pos = 0;
+        int history_index = history_count;
+
+        while (1) {
+
+            char c;
+            read(STDIN_FILENO, &c, 1);
+
+            if (c == '\n') {
+                line[pos] = '\0';
+                printf("\n");
+                break;
+            }
+
+            if (c == 127) { /* backspace */
+
+                if (pos > 0) {
+                    pos--;
+                    printf("\b \b");
+                    fflush(stdout);
+                }
+                continue;
+            }
+
+            if (c == 27) { /* arrow key */
+
+                char seq[2];
+                read(STDIN_FILENO, &seq[0], 1);
+                read(STDIN_FILENO, &seq[1], 1);
+
+                if (seq[1] == 'A') { /* up */
+
+                    history_index--;
+
+                    if (history_index < 0)
+                        history_index = 0;
+
+                    show_history(history_index, line);
+                    pos = strlen(line);
+                }
+
+                if (seq[1] == 'B') { /* down */
+
+                    history_index++;
+
+                    if (history_index >= history_count)
+                        history_index = history_count - 1;
+
+                    show_history(history_index, line);
+                    pos = strlen(line);
+                }
+
+                continue;
+            }
+
+            line[pos++] = c;
+            write(STDOUT_FILENO, &c, 1);
         }
 
-        line[strcspn(line, "\n")] = '\0';
+        disable_raw_mode(&orig_termios);
+
+        if (strlen(line) == 0)
+            continue;
+
+        add_history(line);
 
         if (strcmp(line, "exit") == 0)
             break;
 
-        /* split pipeline */
+        /* pipeline split */
+
         char *cmds[MAX_CMDS];
         int num_cmds = 0;
 
         char *cmd = strtok(line, "|");
 
-        while (cmd != NULL && num_cmds < MAX_CMDS) {
+        while (cmd && num_cmds < MAX_CMDS) {
             cmds[num_cmds++] = cmd;
             cmd = strtok(NULL, "|");
         }
 
-        /* built-in commands */
         if (num_cmds == 1) {
 
             char temp[MAX_LINE];
@@ -149,23 +252,8 @@ int main() {
             char *args[MAX_ARGS];
             parse_args(temp, args);
 
-            if (args[0] && strcmp(args[0], "fg") == 0) {
-
-                if (stopped_pid > 0) {
-
-                    tcsetpgrp(STDIN_FILENO, stopped_pid);
-                    kill(-stopped_pid, SIGCONT);
-
-                    waitpid(-stopped_pid, NULL, WUNTRACED);
-
-                    tcsetpgrp(STDIN_FILENO, shell_pgid);
-
-                    stopped_pid = -1;
-
-                } else {
-                    printf("No stopped job\n");
-                }
-
+            if (args[0] && strcmp(args[0], "jobs") == 0) {
+                print_jobs();
                 continue;
             }
 
@@ -173,16 +261,11 @@ int main() {
                 resume_background();
                 continue;
             }
-
-            if (args[0] && strcmp(args[0], "jobs") == 0) {
-                print_jobs();
-                continue;
-            }
         }
 
         int prev_fd = -1;
-        pid_t pids[MAX_CMDS];
         pid_t job_pgid = 0;
+        pid_t pids[MAX_CMDS];
 
         for (int i = 0; i < num_cmds; i++) {
 
@@ -219,66 +302,6 @@ int main() {
                 char *args[MAX_ARGS];
                 parse_args(cmds[i], args);
 
-                char *input_file = NULL;
-                char *output_file = NULL;
-                int append = 0;
-
-                for (int j = 0; args[j] != NULL; j++) {
-
-                    if (strcmp(args[j], "<") == 0) {
-
-                        input_file = args[j + 1];
-                        args[j] = NULL;
-                        break;
-                    }
-
-                    if (strcmp(args[j], ">") == 0) {
-
-                        output_file = args[j + 1];
-                        args[j] = NULL;
-                        break;
-                    }
-
-                    if (strcmp(args[j], ">>") == 0) {
-
-                        output_file = args[j + 1];
-                        append = 1;
-                        args[j] = NULL;
-                        break;
-                    }
-                }
-
-                if (input_file) {
-
-                    int fd = open(input_file, O_RDONLY);
-
-                    if (fd < 0) {
-                        perror("open input failed");
-                        exit(1);
-                    }
-
-                    dup2(fd, STDIN_FILENO);
-                    close(fd);
-                }
-
-                if (output_file) {
-
-                    int fd;
-
-                    if (append)
-                        fd = open(output_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
-                    else
-                        fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-
-                    if (fd < 0) {
-                        perror("open output failed");
-                        exit(1);
-                    }
-
-                    dup2(fd, STDOUT_FILENO);
-                    close(fd);
-                }
-
                 execvp(args[0], args);
 
                 perror("exec failed");
@@ -302,7 +325,6 @@ int main() {
             }
         }
 
-        /* wait for children */
         for (int i = 0; i < num_cmds; i++) {
 
             int status;
