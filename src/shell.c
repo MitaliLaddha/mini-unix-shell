@@ -10,6 +10,7 @@
 #define MAX_LINE 1024
 #define MAX_ARGS 64
 #define MAX_CMDS 16
+#define MAX_JOBS 64
 
 pid_t stopped_pid = -1;
 
@@ -48,10 +49,13 @@ typedef struct {
     int stopped;
 } Job;
 
-Job jobs[64];
+Job jobs[MAX_JOBS];
 int job_count = 0;
 
 void add_job(pid_t pid, char *cmd, int stopped) {
+
+    if (job_count >= MAX_JOBS)
+        return;
 
     jobs[job_count].id = job_count + 1;
     jobs[job_count].pid = pid;
@@ -65,7 +69,7 @@ void print_jobs() {
 
     for (int i = 0; i < job_count; i++) {
 
-        printf("[%d] ", jobs[i].id);
+        printf("[%d] PID:%d ", jobs[i].id, jobs[i].pid);
 
         if (jobs[i].stopped)
             printf("Stopped ");
@@ -88,18 +92,17 @@ void resume_background() {
     for (int i = 0; i < job_count; i++) {
         if (jobs[i].pid == stopped_pid) {
             jobs[i].stopped = 0;
-            break;
+            printf("[%d] Running %s\n", jobs[i].id, jobs[i].command);
+            return;
         }
     }
-
-    printf("[%d] Running in background\n", stopped_pid);
 }
 
 int main() {
 
     char line[MAX_LINE];
 
-    /* ---- Proper shell job-control setup ---- */
+    /* shell job-control setup */
     pid_t shell_pgid = getpid();
     setpgid(shell_pgid, shell_pgid);
     tcsetpgrp(STDIN_FILENO, shell_pgid);
@@ -123,9 +126,8 @@ int main() {
 
         line[strcspn(line, "\n")] = '\0';
 
-        if (strcmp(line, "exit") == 0) {
+        if (strcmp(line, "exit") == 0)
             break;
-        }
 
         /* split pipeline */
         char *cmds[MAX_CMDS];
@@ -186,9 +188,8 @@ int main() {
 
             int pipefd[2];
 
-            if (i < num_cmds - 1) {
+            if (i < num_cmds - 1)
                 pipe(pipefd);
-            }
 
             pid_t pid = fork();
             pids[i] = pid;
@@ -220,6 +221,7 @@ int main() {
 
                 char *input_file = NULL;
                 char *output_file = NULL;
+                int append = 0;
 
                 for (int j = 0; args[j] != NULL; j++) {
 
@@ -233,6 +235,14 @@ int main() {
                     if (strcmp(args[j], ">") == 0) {
 
                         output_file = args[j + 1];
+                        args[j] = NULL;
+                        break;
+                    }
+
+                    if (strcmp(args[j], ">>") == 0) {
+
+                        output_file = args[j + 1];
+                        append = 1;
                         args[j] = NULL;
                         break;
                     }
@@ -253,9 +263,12 @@ int main() {
 
                 if (output_file) {
 
-                    int fd = open(output_file,
-                                  O_WRONLY | O_CREAT | O_TRUNC,
-                                  0644);
+                    int fd;
+
+                    if (append)
+                        fd = open(output_file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                    else
+                        fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 
                     if (fd < 0) {
                         perror("open output failed");
@@ -277,13 +290,11 @@ int main() {
 
             setpgid(pid, job_pgid);
 
-            if (i == 0) {
+            if (i == 0)
                 tcsetpgrp(STDIN_FILENO, job_pgid);
-            }
 
-            if (prev_fd != -1) {
+            if (prev_fd != -1)
                 close(prev_fd);
-            }
 
             if (i < num_cmds - 1) {
                 close(pipefd[1]);
