@@ -52,11 +52,44 @@ void handle_sigtstp(int sig) {
 void parse_args(char *cmd, char **args) {
 
     int i = 0;
-    char *token = strtok(cmd, " \t");
+    char *p = cmd;
 
-    while (token != NULL && i < MAX_ARGS - 1) {
-        args[i++] = token;
-        token = strtok(NULL, " \t");
+    while (*p) {
+
+        while (*p == ' ' || *p == '\t')
+            p++;
+
+        if (*p == '\0')
+            break;
+
+        if (*p == '"') {
+
+            p++;
+            args[i++] = p;
+
+            while (*p && *p != '"')
+                p++;
+
+            if (*p) {
+                *p = '\0';
+                p++;
+            }
+
+        } else {
+
+            args[i++] = p;
+
+            while (*p && *p != ' ' && *p != '\t')
+                p++;
+
+            if (*p) {
+                *p = '\0';
+                p++;
+            }
+        }
+
+        if (i >= MAX_ARGS - 1)
+            break;
     }
 
     args[i] = NULL;
