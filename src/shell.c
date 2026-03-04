@@ -22,14 +22,12 @@ int history_count = 0;
 
 void add_history(char *cmd) {
     if (strlen(cmd) == 0) return;
-
     strcpy(history[history_count % HISTORY_SIZE], cmd);
     history_count++;
 }
 
 void show_history(int index, char *buffer) {
     if (index < 0 || index >= history_count) return;
-
     strcpy(buffer, history[index % HISTORY_SIZE]);
     printf("\33[2K\rmyshell> %s", buffer);
     fflush(stdout);
@@ -46,11 +44,8 @@ void handle_sigchld(int sig) {
     while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
-void handle_sigint(int sig) {
-}
-
-void handle_sigtstp(int sig) {
-}
+void handle_sigint(int sig) {}
+void handle_sigtstp(int sig) {}
 
 /* ---------- parsing ---------- */
 
@@ -175,12 +170,96 @@ void disable_raw_mode(struct termios *orig) {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, orig);
 }
 
+/* ---------- execute pipeline (your existing logic) ---------- */
+
+int run_pipeline(char *line, int background) {
+
+    char *cmds[MAX_CMDS];
+    int num_cmds = 0;
+
+    char *cmd = strtok(line, "|");
+
+    while (cmd && num_cmds < MAX_CMDS) {
+        cmds[num_cmds++] = cmd;
+        cmd = strtok(NULL, "|");
+    }
+
+    int prev_fd = -1;
+    pid_t job_pgid = 0;
+    pid_t pids[MAX_CMDS];
+
+    for (int i = 0; i < num_cmds; i++) {
+
+        int pipefd[2];
+
+        if (i < num_cmds - 1)
+            pipe(pipefd);
+
+        pid_t pid = fork();
+        pids[i] = pid;
+
+        if (pid == 0) {
+
+            if (job_pgid == 0)
+                job_pgid = getpid();
+
+            setpgid(0, job_pgid);
+
+            signal(SIGINT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
+
+            if (prev_fd != -1) {
+                dup2(prev_fd, STDIN_FILENO);
+                close(prev_fd);
+            }
+
+            if (i < num_cmds - 1) {
+                close(pipefd[0]);
+                dup2(pipefd[1], STDOUT_FILENO);
+                close(pipefd[1]);
+            }
+
+            char *args[MAX_ARGS];
+            parse_args(cmds[i], args);
+
+            execvp(args[0], args);
+
+            perror("exec failed");
+            exit(1);
+        }
+
+        if (job_pgid == 0)
+            job_pgid = pid;
+
+        setpgid(pid, job_pgid);
+
+        if (prev_fd != -1)
+            close(prev_fd);
+
+        if (i < num_cmds - 1) {
+            close(pipefd[1]);
+            prev_fd = pipefd[0];
+        }
+    }
+
+    if (background) {
+        printf("[running in background]\n");
+        return 0;
+    }
+
+    int status;
+
+    for (int i = 0; i < num_cmds; i++)
+        waitpid(pids[i], &status, WUNTRACED);
+
+    return WEXITSTATUS(status);
+}
+
 /* ---------- main ---------- */
 
 int main() {
 
     char line[MAX_LINE];
-
     struct termios orig_termios;
 
     pid_t shell_pgid = getpid();
@@ -268,137 +347,37 @@ int main() {
         if (strcmp(line, "exit") == 0)
             break;
 
-        char *cmds[MAX_CMDS];
-        int num_cmds = 0;
+        /* ---------- split by ; ---------- */
 
-        char *cmd = strtok(line, "|");
+        char *commands[32];
+        int cmd_count = 0;
 
-        while (cmd && num_cmds < MAX_CMDS) {
-            cmds[num_cmds++] = cmd;
-            cmd = strtok(NULL, "|");
+        char *token = strtok(line, ";");
+
+        while (token) {
+            commands[cmd_count++] = token;
+            token = strtok(NULL, ";");
         }
 
-        if (num_cmds == 1) {
+        for (int c = 0; c < cmd_count; c++) {
 
-            char temp[MAX_LINE];
-            strcpy(temp, cmds[0]);
+            char *command = commands[c];
 
-            char *args[MAX_ARGS];
-            parse_args(temp, args);
+            int background = 0;
 
-            /* built-in commands */
-
-            if (args[0] && strcmp(args[0], "cd") == 0) {
-                if (args[1] == NULL)
-                    chdir(getenv("HOME"));
-                else if (chdir(args[1]) != 0)
-                    perror("cd");
-                continue;
+            if (command[strlen(command) - 1] == '&') {
+                background = 1;
+                command[strlen(command) - 1] = '\0';
             }
 
-            if (args[0] && strcmp(args[0], "pwd") == 0) {
-                char cwd[1024];
-                getcwd(cwd, sizeof(cwd));
-                printf("%s\n", cwd);
-                continue;
-            }
+            int status = run_pipeline(command, background);
 
-            if (args[0] && strcmp(args[0], "history") == 0) {
-                print_history();
-                continue;
-            }
+            if (strstr(command, "&&") && status != 0)
+                break;
 
-            if (args[0] && strcmp(args[0], "jobs") == 0) {
-                print_jobs();
-                continue;
-            }
-
-            if (args[0] && strcmp(args[0], "bg") == 0) {
-                resume_background();
-                continue;
-            }
+            if (strstr(command, "||") && status == 0)
+                break;
         }
-
-        int prev_fd = -1;
-        pid_t job_pgid = 0;
-        pid_t pids[MAX_CMDS];
-
-        for (int i = 0; i < num_cmds; i++) {
-
-            int pipefd[2];
-
-            if (i < num_cmds - 1)
-                pipe(pipefd);
-
-            pid_t pid = fork();
-            pids[i] = pid;
-
-            if (pid == 0) {
-
-                if (job_pgid == 0)
-                    job_pgid = getpid();
-
-                setpgid(0, job_pgid);
-
-                signal(SIGINT, SIG_DFL);
-                signal(SIGTSTP, SIG_DFL);
-
-                if (prev_fd != -1) {
-                    dup2(prev_fd, STDIN_FILENO);
-                    close(prev_fd);
-                }
-
-                if (i < num_cmds - 1) {
-
-                    close(pipefd[0]);
-                    dup2(pipefd[1], STDOUT_FILENO);
-                    close(pipefd[1]);
-                }
-
-                char *args[MAX_ARGS];
-                parse_args(cmds[i], args);
-
-                execvp(args[0], args);
-
-                perror("exec failed");
-                exit(1);
-            }
-
-            if (job_pgid == 0)
-                job_pgid = pid;
-
-            setpgid(pid, job_pgid);
-
-            if (i == 0)
-                tcsetpgrp(STDIN_FILENO, job_pgid);
-
-            if (prev_fd != -1)
-                close(prev_fd);
-
-            if (i < num_cmds - 1) {
-                close(pipefd[1]);
-                prev_fd = pipefd[0];
-            }
-        }
-
-        for (int i = 0; i < num_cmds; i++) {
-
-            int status;
-
-            waitpid(pids[i], &status, WUNTRACED);
-
-            if (WIFSTOPPED(status)) {
-
-                stopped_pid = pids[i];
-                add_job(pids[i], cmds[0], 1);
-
-                tcsetpgrp(STDIN_FILENO, shell_pgid);
-
-                printf("\n[process %d stopped]\n", pids[i]);
-            }
-        }
-
-        tcsetpgrp(STDIN_FILENO, shell_pgid);
     }
 
     return 0;
