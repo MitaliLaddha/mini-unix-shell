@@ -41,6 +41,41 @@ void parse_args(char *cmd, char **args) {
     args[i] = NULL;
 }
 
+typedef struct {
+    int id;
+    pid_t pid;
+    char command[MAX_LINE];
+    int stopped;
+} Job;
+
+Job jobs[64];
+int job_count = 0;
+
+void add_job(pid_t pid, char *cmd, int stopped) {
+
+    jobs[job_count].id = job_count + 1;
+    jobs[job_count].pid = pid;
+    strcpy(jobs[job_count].command, cmd);
+    jobs[job_count].stopped = stopped;
+
+    job_count++;
+}
+
+void print_jobs() {
+
+    for (int i = 0; i < job_count; i++) {
+
+        printf("[%d] ", jobs[i].id);
+
+        if (jobs[i].stopped)
+            printf("Stopped ");
+        else
+            printf("Running ");
+
+        printf("%s\n", jobs[i].command);
+    }
+}
+
 int main() {
 
     char line[MAX_LINE];
@@ -54,7 +89,6 @@ int main() {
     signal(SIGINT, handle_sigint);
     signal(SIGTSTP, handle_sigtstp);
 
-    /* ignore terminal job control signals */
     signal(SIGTTIN, SIG_IGN);
     signal(SIGTTOU, SIG_IGN);
 
@@ -85,7 +119,7 @@ int main() {
             cmd = strtok(NULL, "|");
         }
 
-        /* fg command (only if single command) */
+        /* built-in commands */
         if (num_cmds == 1) {
 
             char temp[MAX_LINE];
@@ -113,6 +147,11 @@ int main() {
 
                 continue;
             }
+
+            if (args[0] && strcmp(args[0], "jobs") == 0) {
+                print_jobs();
+                continue;
+            }
         }
 
         int prev_fd = -1;
@@ -131,8 +170,6 @@ int main() {
             pids[i] = pid;
 
             if (pid == 0) {
-
-                /* child */
 
                 if (job_pgid == 0)
                     job_pgid = getpid();
@@ -211,8 +248,6 @@ int main() {
                 exit(1);
             }
 
-            /* parent */
-
             if (job_pgid == 0)
                 job_pgid = pid;
 
@@ -242,6 +277,7 @@ int main() {
             if (WIFSTOPPED(status)) {
 
                 stopped_pid = pids[i];
+                add_job(pids[i], cmds[0], 1);
 
                 tcsetpgrp(STDIN_FILENO, shell_pgid);
 
