@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <termios.h>
+#include <glob.h>
 
 #define MAX_LINE 1024
 #define MAX_ARGS 64
@@ -93,6 +94,50 @@ void parse_args(char *cmd, char **args) {
     }
 
     args[i] = NULL;
+}
+
+/* ---------- environment variable expansion ---------- */
+
+void expand_variables(char **args) {
+
+    for(int i = 0; args[i]; i++) {
+
+        if(args[i][0] == '$') {
+
+            char *val = getenv(args[i] + 1);
+
+            if(val)
+                args[i] = val;
+        }
+    }
+}
+
+/* ---------- wildcard expansion ---------- */
+
+void expand_wildcards(char **args, char **expanded) {
+
+    int idx = 0;
+
+    for(int i = 0; args[i]; i++) {
+
+        glob_t g;
+
+        if(strchr(args[i], '*')) {
+
+            if(glob(args[i], 0, NULL, &g) == 0) {
+
+                for(size_t j = 0; j < g.gl_pathc; j++)
+                    expanded[idx++] = g.gl_pathv[j];
+
+                globfree(&g);
+                continue;
+            }
+        }
+
+        expanded[idx++] = args[i];
+    }
+
+    expanded[idx] = NULL;
 }
 
 /* ---------- job control ---------- */
@@ -222,36 +267,41 @@ int run_pipeline(char *line, int background) {
             char *args[MAX_ARGS];
             parse_args(cmds[i], args);
 
+            expand_variables(args);
+
+            char *expanded[MAX_ARGS];
+            expand_wildcards(args, expanded);
+
             /* ---------- redirection ---------- */
 
-            for (int j = 0; args[j]; j++) {
+            for (int j = 0; expanded[j]; j++) {
 
-                if (strcmp(args[j], "<") == 0) {
+                if (strcmp(expanded[j], "<") == 0) {
 
-                    int fd = open(args[j+1], O_RDONLY);
+                    int fd = open(expanded[j+1], O_RDONLY);
                     dup2(fd, STDIN_FILENO);
                     close(fd);
-                    args[j] = NULL;
+                    expanded[j] = NULL;
                 }
 
-                if (strcmp(args[j], ">") == 0) {
+                if (strcmp(expanded[j], ">") == 0) {
 
-                    int fd = open(args[j+1], O_CREAT | O_WRONLY | O_TRUNC, 0644);
+                    int fd = open(expanded[j+1], O_CREAT | O_WRONLY | O_TRUNC, 0644);
                     dup2(fd, STDOUT_FILENO);
                     close(fd);
-                    args[j] = NULL;
+                    expanded[j] = NULL;
                 }
 
-                if (strcmp(args[j], ">>") == 0) {
+                if (strcmp(expanded[j], ">>") == 0) {
 
-                    int fd = open(args[j+1], O_CREAT | O_WRONLY | O_APPEND, 0644);
+                    int fd = open(expanded[j+1], O_CREAT | O_WRONLY | O_APPEND, 0644);
                     dup2(fd, STDOUT_FILENO);
                     close(fd);
-                    args[j] = NULL;
+                    expanded[j] = NULL;
                 }
             }
 
-            execvp(args[0], args);
+            execvp(expanded[0], expanded);
 
             perror("exec failed");
             exit(1);
@@ -379,7 +429,10 @@ int main() {
         if (strcmp(line, "exit") == 0)
             break;
 
-        /* ---------- split by ; ---------- */
+        if (strcmp(line, "clear") == 0) {
+            printf("\033[H\033[J");
+            continue;
+        }
 
         char *commands[32];
         int cmd_count = 0;
