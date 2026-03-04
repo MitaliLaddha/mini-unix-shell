@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <termios.h>
 #include <glob.h>
+#include <dirent.h>
+#include <limits.h>
 
 #define MAX_LINE 1024
 #define MAX_ARGS 64
@@ -37,6 +39,66 @@ void show_history(int index, char *buffer) {
 void print_history() {
     for (int i = 0; i < history_count && i < HISTORY_SIZE; i++)
         printf("%d %s\n", i + 1, history[i]);
+}
+
+/* ---------- TAB COMPLETION ---------- */
+
+void tab_complete(char *buffer, int *pos) {
+
+    char prefix[256];
+    int i = *pos - 1;
+
+    while(i >= 0 && buffer[i] != ' ' && buffer[i] != '/')
+        i--;
+
+    strcpy(prefix, buffer + i + 1);
+
+    DIR *d = opendir(".");
+    if(!d) return;
+
+    struct dirent *entry;
+
+    while((entry = readdir(d))) {
+
+        if(strncmp(entry->d_name, prefix, strlen(prefix)) == 0) {
+
+            char *completion = entry->d_name + strlen(prefix);
+
+            strcpy(buffer + *pos, completion);
+            printf("%s", completion);
+
+            *pos += strlen(completion);
+            break;
+        }
+    }
+
+    closedir(d);
+}
+
+/* ---------- RC FILE LOADER ---------- */
+
+void load_rc() {
+
+    char path[PATH_MAX];
+
+    snprintf(path, sizeof(path), "%s/.myshellrc", getenv("HOME"));
+
+    FILE *f = fopen(path, "r");
+
+    if(!f) return;
+
+    char line[MAX_LINE];
+
+    while(fgets(line, sizeof(line), f)) {
+
+        line[strcspn(line, "\n")] = 0;
+
+        if(strlen(line) == 0) continue;
+
+        system(line);
+    }
+
+    fclose(f);
 }
 
 /* ---------- signals ---------- */
@@ -272,35 +334,6 @@ int run_pipeline(char *line, int background) {
             char *expanded[MAX_ARGS];
             expand_wildcards(args, expanded);
 
-            /* ---------- redirection ---------- */
-
-            for (int j = 0; expanded[j]; j++) {
-
-                if (strcmp(expanded[j], "<") == 0) {
-
-                    int fd = open(expanded[j+1], O_RDONLY);
-                    dup2(fd, STDIN_FILENO);
-                    close(fd);
-                    expanded[j] = NULL;
-                }
-
-                if (strcmp(expanded[j], ">") == 0) {
-
-                    int fd = open(expanded[j+1], O_CREAT | O_WRONLY | O_TRUNC, 0644);
-                    dup2(fd, STDOUT_FILENO);
-                    close(fd);
-                    expanded[j] = NULL;
-                }
-
-                if (strcmp(expanded[j], ">>") == 0) {
-
-                    int fd = open(expanded[j+1], O_CREAT | O_WRONLY | O_APPEND, 0644);
-                    dup2(fd, STDOUT_FILENO);
-                    close(fd);
-                    expanded[j] = NULL;
-                }
-            }
-
             execvp(expanded[0], expanded);
 
             perror("exec failed");
@@ -352,6 +385,8 @@ int main() {
     signal(SIGTTIN, SIG_IGN);
     signal(SIGTTOU, SIG_IGN);
 
+    load_rc();   /* run .myshellrc at startup */
+
     while (1) {
 
         char cwd[1024];
@@ -369,6 +404,12 @@ int main() {
 
             char c;
             read(STDIN_FILENO, &c, 1);
+
+            if (c == '\t') {
+                tab_complete(line, &pos);
+                fflush(stdout);
+                continue;
+            }
 
             if (c == '\n') {
                 line[pos] = '\0';
