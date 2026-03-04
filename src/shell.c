@@ -35,6 +35,11 @@ void show_history(int index, char *buffer) {
     fflush(stdout);
 }
 
+void print_history() {
+    for (int i = 0; i < history_count && i < HISTORY_SIZE; i++)
+        printf("%d %s\n", i + 1, history[i]);
+}
+
 /* ---------- signals ---------- */
 
 void handle_sigchld(int sig) {
@@ -210,7 +215,7 @@ int main() {
                 break;
             }
 
-            if (c == 127) { /* backspace */
+            if (c == 127) {
 
                 if (pos > 0) {
                     pos--;
@@ -220,16 +225,15 @@ int main() {
                 continue;
             }
 
-            if (c == 27) { /* arrow key */
+            if (c == 27) {
 
                 char seq[2];
                 read(STDIN_FILENO, &seq[0], 1);
                 read(STDIN_FILENO, &seq[1], 1);
 
-                if (seq[1] == 'A') { /* up */
+                if (seq[1] == 'A') {
 
                     history_index--;
-
                     if (history_index < 0)
                         history_index = 0;
 
@@ -237,10 +241,9 @@ int main() {
                     pos = strlen(line);
                 }
 
-                if (seq[1] == 'B') { /* down */
+                if (seq[1] == 'B') {
 
                     history_index++;
-
                     if (history_index >= history_count)
                         history_index = history_count - 1;
 
@@ -265,8 +268,6 @@ int main() {
         if (strcmp(line, "exit") == 0)
             break;
 
-        /* pipeline split */
-
         char *cmds[MAX_CMDS];
         int num_cmds = 0;
 
@@ -284,6 +285,28 @@ int main() {
 
             char *args[MAX_ARGS];
             parse_args(temp, args);
+
+            /* built-in commands */
+
+            if (args[0] && strcmp(args[0], "cd") == 0) {
+                if (args[1] == NULL)
+                    chdir(getenv("HOME"));
+                else if (chdir(args[1]) != 0)
+                    perror("cd");
+                continue;
+            }
+
+            if (args[0] && strcmp(args[0], "pwd") == 0) {
+                char cwd[1024];
+                getcwd(cwd, sizeof(cwd));
+                printf("%s\n", cwd);
+                continue;
+            }
+
+            if (args[0] && strcmp(args[0], "history") == 0) {
+                print_history();
+                continue;
+            }
 
             if (args[0] && strcmp(args[0], "jobs") == 0) {
                 print_jobs();
