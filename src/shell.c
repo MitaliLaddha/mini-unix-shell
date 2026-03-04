@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <termios.h>
 
 #define MAX_LINE 1024
 #define MAX_ARGS 64
@@ -19,6 +20,10 @@ void handle_sigchld(int sig) {
 
 /* ignore ctrl+c in shell */
 void handle_sigint(int sig) {
+}
+
+/* ignore ctrl+z in shell */
+void handle_sigtstp(int sig) {
 }
 
 /* split command into argv */
@@ -40,8 +45,18 @@ int main() {
 
     char line[MAX_LINE];
 
+    /* ---- Proper shell job-control setup ---- */
+    pid_t shell_pgid = getpid();
+    setpgid(shell_pgid, shell_pgid);
+    tcsetpgrp(STDIN_FILENO, shell_pgid);
+
     signal(SIGCHLD, handle_sigchld);
     signal(SIGINT, handle_sigint);
+    signal(SIGTSTP, handle_sigtstp);
+
+    /* ignore terminal job control signals */
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
 
     while (1) {
 
@@ -83,8 +98,13 @@ int main() {
 
                 if (stopped_pid > 0) {
 
-                    kill(stopped_pid, SIGCONT);
-                    waitpid(stopped_pid, NULL, 0);
+                    tcsetpgrp(STDIN_FILENO, stopped_pid);
+                    kill(-stopped_pid, SIGCONT);
+
+                    waitpid(-stopped_pid, NULL, WUNTRACED);
+
+                    tcsetpgrp(STDIN_FILENO, shell_pgid);
+
                     stopped_pid = -1;
 
                 } else {
@@ -97,6 +117,7 @@ int main() {
 
         int prev_fd = -1;
         pid_t pids[MAX_CMDS];
+        pid_t job_pgid = 0;
 
         for (int i = 0; i < num_cmds; i++) {
 
@@ -110,6 +131,13 @@ int main() {
             pids[i] = pid;
 
             if (pid == 0) {
+
+                /* child */
+
+                if (job_pgid == 0)
+                    job_pgid = getpid();
+
+                setpgid(0, job_pgid);
 
                 signal(SIGINT, SIG_DFL);
                 signal(SIGTSTP, SIG_DFL);
@@ -183,6 +211,17 @@ int main() {
                 exit(1);
             }
 
+            /* parent */
+
+            if (job_pgid == 0)
+                job_pgid = pid;
+
+            setpgid(pid, job_pgid);
+
+            if (i == 0) {
+                tcsetpgrp(STDIN_FILENO, job_pgid);
+            }
+
             if (prev_fd != -1) {
                 close(prev_fd);
             }
@@ -204,9 +243,13 @@ int main() {
 
                 stopped_pid = pids[i];
 
+                tcsetpgrp(STDIN_FILENO, shell_pgid);
+
                 printf("\n[process %d stopped]\n", pids[i]);
             }
         }
+
+        tcsetpgrp(STDIN_FILENO, shell_pgid);
     }
 
     return 0;
