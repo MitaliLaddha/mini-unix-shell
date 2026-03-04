@@ -76,6 +76,25 @@ void print_jobs() {
     }
 }
 
+void resume_background() {
+
+    if (stopped_pid <= 0) {
+        printf("No stopped job\n");
+        return;
+    }
+
+    kill(-stopped_pid, SIGCONT);
+
+    for (int i = 0; i < job_count; i++) {
+        if (jobs[i].pid == stopped_pid) {
+            jobs[i].stopped = 0;
+            break;
+        }
+    }
+
+    printf("[%d] Running in background\n", stopped_pid);
+}
+
 int main() {
 
     char line[MAX_LINE];
@@ -145,6 +164,11 @@ int main() {
                     printf("No stopped job\n");
                 }
 
+                continue;
+            }
+
+            if (args[0] && strcmp(args[0], "bg") == 0) {
+                resume_background();
                 continue;
             }
 
